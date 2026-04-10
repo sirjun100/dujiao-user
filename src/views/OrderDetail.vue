@@ -404,6 +404,8 @@ const fulfillmentCopied = ref(false)
 let fulfillmentCopiedTimer: ReturnType<typeof setTimeout> | null = null
 
 const fulfillmentDownloading = ref(false)
+const pollTimer = ref<number | null>(null)
+const pollingInFlight = ref(false)
 
 const isFulfillmentTruncated = (fulfillment: any) => {
   return fulfillment?.payload_line_count > 100
@@ -443,19 +445,49 @@ const showTimeCard = computed(() => {
   return Boolean(order.value.paid_at || order.value.expires_at || order.value.canceled_at)
 })
 
-const loadOrder = async () => {
-  loading.value = true
+const loadOrder = async (silent = false) => {
+  if (pollingInFlight.value) return
+  pollingInFlight.value = true
+  if (!silent) {
+    loading.value = true
+  }
   try {
     const response = await userOrderAPI.detail(String(route.params.order_no || '').trim())
     order.value = response.data.data
+    const status = String(order.value?.status || '').toLowerCase()
+    const children = Array.isArray(order.value?.children) ? order.value.children : []
+    const isTerminal = (s: string) => ['delivered', 'completed', 'canceled', 'cancelled', 'failed'].includes(s)
+    const allChildrenTerminal = children.every((child: any) => isTerminal(String(child?.status || '').toLowerCase()))
+    if (isTerminal(status) && allChildrenTerminal) {
+      stopPolling()
+    } else {
+      startPolling()
+    }
   } catch (error) {
     order.value = null
+    stopPolling()
   } finally {
-    loading.value = false
+    if (!silent) {
+      loading.value = false
+    }
+    pollingInFlight.value = false
   }
 }
 
 const debouncedLoadOrder = debounceAsync(loadOrder, 300)
+
+const startPolling = () => {
+  if (pollTimer.value) return
+  pollTimer.value = window.setInterval(() => {
+    void loadOrder(true)
+  }, 5000)
+}
+
+const stopPolling = () => {
+  if (!pollTimer.value) return
+  window.clearInterval(pollTimer.value)
+  pollTimer.value = null
+}
 
 const cancelOrder = async () => {
   if (!order.value) return
@@ -642,6 +674,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopPolling()
   debouncedLoadOrder.cancel()
 })
 </script>
